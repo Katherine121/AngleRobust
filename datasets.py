@@ -87,7 +87,8 @@ class TrainDataset(Dataset):
         item = self.imgs[index]
 
         next_imgs = None
-        cont_next_imgs = None
+        if self.add_cont_style:
+            cont_next_imgs = None
         next_angles = []
 
         # generate frame sequence and angle sequence
@@ -102,14 +103,17 @@ class TrainDataset(Dataset):
                 cont_img = Image.fromarray(cont_img)
 
             img = self.transform(img).unsqueeze(dim=0)
-            cont_img = self.transform(cont_img).unsqueeze(dim=0)
+            if self.add_cont_style:
+                cont_img = self.transform(cont_img).unsqueeze(dim=0)
 
             if next_imgs is None:
                 next_imgs = img
-                cont_next_imgs = cont_img
+                if self.add_cont_style:
+                    cont_next_imgs = cont_img
             else:
                 next_imgs = torch.cat((next_imgs, img), dim=0)
-                cont_next_imgs = torch.cat((cont_next_imgs, cont_img), dim=0)
+                if self.add_cont_style:
+                    cont_next_imgs = torch.cat((cont_next_imgs, cont_img), dim=0)
 
             if i == len(item) - 1:
                 next_angles.append([0, 0])
@@ -121,7 +125,8 @@ class TrainDataset(Dataset):
         dest_img = dest_img.convert('RGB')
         dest_img = self.transform(dest_img).unsqueeze(dim=0)
         next_imgs = torch.cat((next_imgs, dest_img), dim=0)
-        cont_next_imgs = torch.cat((cont_next_imgs, dest_img), dim=0)
+        if self.add_cont_style:
+            cont_next_imgs = torch.cat((cont_next_imgs, dest_img), dim=0)
 
         dest_angle = [0, 0]
         next_angles.append(dest_angle)
@@ -135,12 +140,16 @@ class TrainDataset(Dataset):
         # if there are not enough input frames
         for i in range(0, self.input_len - len(item)):
             next_imgs = torch.cat((next_imgs, torch.zeros((1, 3, 224, 224))), dim=0)
-            cont_next_imgs = torch.cat((cont_next_imgs, torch.zeros((1, 3, 224, 224))), dim=0)
+            if self.add_cont_style:
+                cont_next_imgs = torch.cat((cont_next_imgs, torch.zeros((1, 3, 224, 224))), dim=0)
             next_angles = torch.cat((next_angles, torch.zeros((1, 2))), dim=0)
 
         # input: frame sequence (input_len + 1), angle sequence (input_len + 1),
         # output: the current position label, the next position label, the direction angle
-        return next_imgs, cont_next_imgs, next_angles, label1, label2, label3
+        if self.add_cont_style:
+            return next_imgs, cont_next_imgs, next_angles, label1, label2, label3
+        else:
+            return next_imgs, next_angles, label1, label2, label3
 
 
 class TestDataset(Dataset):
