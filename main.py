@@ -34,11 +34,11 @@ parser.add_argument('--epochs', default=120, type=int,
 parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='FREQ', help='print frequency (default: 10)')
 
-parser.add_argument('--save-dir', default='save-twobran', type=str,
+parser.add_argument('--save-dir', default='save-baseline', type=str,
                     metavar='PATH', help='model saved path')
 parser.add_argument('--dataset-path', default='../../../mnt/nfs/wyx/datasets', type=str,
                     metavar='PATH', help='dataset path')
-parser.add_argument('-b', '--batch-size', default=64, type=int,
+parser.add_argument('-b', '--batch-size', default=128, type=int,
                     metavar='BS',
                     help='mini-batch size (default: 128), this is the total '
                          'batch size of all GPUs on all nodes when '
@@ -302,7 +302,7 @@ def main_worker(gpu, ngpus_per_node, args):
                                  num_nodes=args.num_nodes,
                                  transform=train_transform,
                                  input_len=args.len - 1,
-                                 add_cont_style=True)
+                                 add_cont_style=False)
     test_dataset = TestDataset(dataset_path=args.dataset_path,
                                num_nodes=args.num_nodes,
                                transform=val_transform,
@@ -421,11 +421,10 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
     model.train()
 
     end = time.time()
-    for i, (images, cont_images, next_angles, label1, label2, label3) in enumerate(train_loader):
+    for i, (images, next_angles, label1, label2, label3) in enumerate(train_loader):
         if args.gpu is not None:
             # b,len,3,224,224
             images = images.cuda(args.gpu, non_blocking=True).to(dtype=torch.float32)
-            cont_images = cont_images.cuda(args.gpu, non_blocking=True).to(dtype=torch.float32)
             # b,len,2
             next_angles = next_angles.cuda(args.gpu, non_blocking=True).to(dtype=torch.float32)
             # b
@@ -436,8 +435,8 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
             label3 = label3.cuda(args.gpu, non_blocking=True).to(dtype=torch.float32)
 
         # b,len,3,224,224+b,len,2
-        output1, output2, output3, cont_output1, cont_output2, cont_output3\
-            = model(img=images, cont_img=cont_images, ang=next_angles)
+        output1, output2, output3\
+            = model(img=images, ang=next_angles)
 
         # normal loss
         loss1 = criterion1(output1, label1)
@@ -445,32 +444,20 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
         loss3 = criterion2(output3, label3)
         loss = criterion([loss1, loss2, loss3])
 
-        # aug loss
-        cont_loss1 = criterion1(cont_output1, label1)
-        cont_loss2 = criterion1(cont_output2, label2)
-        cont_loss3 = criterion2(cont_output3, label3)
-        cont_loss = criterion([cont_loss1, cont_loss2, cont_loss3])
-
-        loss = (loss + cont_loss) / 2
-
         # measure accuracy and record loss
         label_acc, _ = accuracy(output1, label1, topk=(1, 5))
         target_acc, _ = accuracy(output2, label2, topk=(1, 5))
         angle_acc_avg = angle_diff(output3, label3)
 
-        cont_label_acc, _ = accuracy(cont_output1, label1, topk=(1, 5))
-        cont_target_acc, _ = accuracy(cont_output2, label2, topk=(1, 5))
-        cont_angle_acc_avg = angle_diff(cont_output3, label3)
-
         losses.update(loss.item(), images.size(0))
-        label_top.update((label_acc[0] + cont_label_acc[0]) / 2, images.size(0))
-        target_top.update((target_acc[0] + cont_target_acc[0]) / 2, images.size(0))
-        angle_top.update((angle_acc_avg + cont_angle_acc_avg) / 2 / images.size(0), images.size(0))
+        label_top.update(label_acc[0], images.size(0))
+        target_top.update(target_acc[0], images.size(0))
+        angle_top.update(angle_acc_avg / images.size(0), images.size(0))
 
         total_loss += loss.item()
-        total_loss1 += (loss1.item() + cont_loss1.item()) / 2
-        total_loss2 += (loss2.item() + cont_loss2.item()) / 2
-        total_loss3 += (loss3.item() + cont_loss3.item()) / 2
+        total_loss1 += loss1.item()
+        total_loss2 += loss2.item()
+        total_loss3 += loss3.item()
 
         # compute gradient
         optimizer.zero_grad()

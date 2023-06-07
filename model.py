@@ -249,26 +249,13 @@ class ARTransformer(nn.Module):
         img = img[:, -1, :]
         return self.head_label(img), self.head_target(img), self.head_angle(img)
 
-    def forward(self, img, cont_img, ang):
+    def forward(self, img, ang):
         """
         forward pass of ARTransformer.
         :param img: input frame sequence.
         :param ang: input angle sequence.
         :return: the current position preds, the next position preds, the direction angle preds.
         """
-        # train
-        if cont_img is not None:
-            img_q1 = self.encoder_q(img, ang)
-            img_q2 = self.encoder_q(cont_img, ang)
-
-            img_label, img_target, img_angle = self.header(img_q1)
-            cont_img_label, cont_img_target, cont_img_angle = self.header(img_q2)
-
-            return img_label, img_target, img_angle, \
-                   cont_img_label, cont_img_target, cont_img_angle
-
-        # test
-        else:
-            img_q1 = self.encoder_q(img, ang)
-            img_label, img_target, img_angle = self.header(img_q1)
-            return img_label, img_target, img_angle
+        img_q1 = self.encoder_q(img, ang)
+        img_label, img_target, img_angle = self.header(img_q1)
+        return img_label, img_target, img_angle
