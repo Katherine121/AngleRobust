@@ -206,8 +206,7 @@ class AREncoder(nn.Module):
 class ARTransformer(nn.Module):
     def __init__(self, *, backbone, extractor_dim,
                  num_classes1, num_classes2, len,
-                 dim, heads, mlp_dim, depth,
-                 moco_m, moco_tau, moco_criterion):
+                 dim, heads, mlp_dim, depth):
         """
         ARTransformer
         :param backbone: backbone of Sequence Feature Encoder (MobileNetV3 small).
@@ -225,14 +224,10 @@ class ARTransformer(nn.Module):
         """
         super().__init__()
         self.encoder_q = AREncoder(backbone, extractor_dim, len, dim, heads, mlp_dim, depth)
-        self.encoder_k = AREncoder(backbone, extractor_dim, len, dim, heads, mlp_dim, depth)
 
         self.extractor_dim = extractor_dim
         self.dim = dim
         self.len = len
-        self.m = moco_m
-        self.tau = moco_tau
-        self.criterion = moco_criterion
 
         self.head_label = nn.Sequential(
             nn.LayerNorm(dim),
@@ -250,21 +245,9 @@ class ARTransformer(nn.Module):
             nn.Linear(dim // 2, num_classes2)
         )
 
-        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
-            param_k.data.copy_(param_q.data)  # initialize
-            param_k.requires_grad = False  # not update by gradient
-
     def header(self, img):
         img = img[:, -1, :]
         return self.head_label(img), self.head_target(img), self.head_angle(img)
-
-    @torch.no_grad()
-    def _momentum_update_key_encoder(self):
-        """
-        Momentum update of the key encoder
-        """
-        for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
-            param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
 
     def forward(self, img, cont_img, ang):
         """
@@ -278,43 +261,14 @@ class ARTransformer(nn.Module):
             img_q1 = self.encoder_q(img, ang)
             img_q2 = self.encoder_q(cont_img, ang)
 
-            q1 = nn.functional.normalize(img_q1, dim=-1)
-            q1 = q1.view(-1, self.dim)
-            q2 = nn.functional.normalize(img_q2, dim=-1)
-            q2 = q2.view(-1, self.dim)
-
-            # compute key features
-            with torch.no_grad():  # no gradient to keys
-                self._momentum_update_key_encoder()  # update the key encoder
-
-                img_k1 = self.encoder_k(img, ang)
-                img_k2 = self.encoder_k(cont_img, ang)  # keys: NxC
-
-                k1 = nn.functional.normalize(img_k1, dim=-1)
-                k1 = k1.view(-1, self.dim)
-                k2 = nn.functional.normalize(img_k2, dim=-1)
-                k2 = k2.view(-1, self.dim)
-
-            qk_loss = 0.5 * ctr(q1, k2, self.criterion, self.tau) + \
-                      0.5 * ctr(q2, k1, self.criterion, self.tau)
-
             img_label, img_target, img_angle = self.header(img_q1)
             cont_img_label, cont_img_target, cont_img_angle = self.header(img_q2)
 
             return img_label, img_target, img_angle, \
-                   cont_img_label, cont_img_target, cont_img_angle, qk_loss
+                   cont_img_label, cont_img_target, cont_img_angle
 
         # test
         else:
             img_q1 = self.encoder_q(img, ang)
             img_label, img_target, img_angle = self.header(img_q1)
             return img_label, img_target, img_angle
-
-
-def ctr(q, k, criterion, tau):
-    logits = torch.mm(q, k.t())
-    N = q.size(0)
-    labels = range(N)
-    labels = torch.LongTensor(labels).cuda()
-    loss = criterion(logits / tau, labels)
-    return 2 * tau * loss

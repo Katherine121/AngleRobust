@@ -34,11 +34,11 @@ parser.add_argument('--epochs', default=120, type=int,
 parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='FREQ', help='print frequency (default: 10)')
 
-parser.add_argument('--save-dir', default='save-cont', type=str,
+parser.add_argument('--save-dir', default='save-twobran', type=str,
                     metavar='PATH', help='model saved path')
 parser.add_argument('--dataset-path', default='../../../mnt/nfs/wyx/datasets', type=str,
                     metavar='PATH', help='dataset path')
-parser.add_argument('-b', '--batch-size', default=128, type=int,
+parser.add_argument('-b', '--batch-size', default=64, type=int,
                     metavar='BS',
                     help='mini-batch size (default: 128), this is the total '
                          'batch size of all GPUs on all nodes when '
@@ -177,10 +177,7 @@ def main_worker(gpu, ngpus_per_node, args):
         dim=512,
         heads=8,
         mlp_dim=2048,
-        depth=6,
-        moco_m=args.moco_m,
-        moco_tau=args.moco_tau,
-        moco_criterion=nn.CrossEntropyLoss()
+        depth=6
     )
 
     # shufflenetv2+vit: flops: 991.25 M, params: 15.41 M
@@ -335,7 +332,7 @@ def main_worker(gpu, ngpus_per_node, args):
             train_sampler.set_epoch(epoch)
 
         # train for one epoch
-        loss, loss1, loss2, loss3, loss_qk = train(train_loader, model, criterion1, criterion2, criterion, optimizer,
+        loss, loss1, loss2, loss3 = train(train_loader, model, criterion1, criterion2, criterion, optimizer,
                                           lr_scheduler, epoch,
                                           args)
 
@@ -359,7 +356,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 os.mkdir(args.save_dir)
             with open(args.save_dir + "/loss.txt", "a") as file1:
                 file1.write(str(loss) + " " + str(loss1) + " " + str(loss2) +
-                            " " + str(loss3) + " " + str(loss_qk) + "\n")
+                            " " + str(loss3) + "\n")
             file1.close()
             with open(args.save_dir + "/label_acc.txt", "a") as file1:
                 file1.write(str(label_acc) + " " + str(best_acc1) + "\n")
@@ -420,7 +417,6 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
     total_loss1 = 0
     total_loss2 = 0
     total_loss3 = 0
-    total_loss_qk = 0
 
     model.train()
 
@@ -440,7 +436,7 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
             label3 = label3.cuda(args.gpu, non_blocking=True).to(dtype=torch.float32)
 
         # b,len,3,224,224+b,len,2
-        output1, output2, output3, cont_output1, cont_output2, cont_output3, qk_loss\
+        output1, output2, output3, cont_output1, cont_output2, cont_output3\
             = model(img=images, cont_img=cont_images, ang=next_angles)
 
         # normal loss
@@ -455,7 +451,7 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
         cont_loss3 = criterion2(cont_output3, label3)
         cont_loss = criterion([cont_loss1, cont_loss2, cont_loss3])
 
-        loss = (1 - args.qk_w) * (loss + cont_loss) / 2 + args.qk_w * qk_loss
+        loss = (loss + cont_loss) / 2
 
         # measure accuracy and record loss
         label_acc, _ = accuracy(output1, label1, topk=(1, 5))
@@ -475,7 +471,6 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
         total_loss1 += (loss1.item() + cont_loss1.item()) / 2
         total_loss2 += (loss2.item() + cont_loss2.item()) / 2
         total_loss3 += (loss3.item() + cont_loss3.item()) / 2
-        total_loss_qk += qk_loss.item()
 
         # compute gradient
         optimizer.zero_grad()
@@ -490,8 +485,7 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
         if i % args.print_freq == 0:
             progress.display(i)
     return float(total_loss / (i + 1)), float(total_loss1 / (i + 1)), \
-           float(total_loss2 / (i + 1)), float(total_loss3 / (i + 1)), \
-           float(total_loss_qk / (i + 1))
+           float(total_loss2 / (i + 1)), float(total_loss3 / (i + 1))
 
 
 def validate(val_loader, model, args):
