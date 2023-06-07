@@ -8,7 +8,7 @@ class UncertaintyLoss(nn.Module):
         initialize loss weights.
         """
         super(UncertaintyLoss, self).__init__()
-        params = torch.tensor([1.0, 1.0, 1.0], requires_grad=True)
+        params = torch.tensor([1.0 / 3, 1.0 / 3, 1.0 / 3], requires_grad=True)
         self.params = torch.nn.Parameter(params)
 
     def forward(self, loss_list):

@@ -20,7 +20,7 @@ from torchvision.models import ShuffleNet_V2_X1_0_Weights, MobileNet_V3_Small_We
 from torchvision.transforms import AutoAugment
 import torch.multiprocessing as mp
 from model import ARTransformer
-from datasets import OrderTrainDataset, OrderTestDataset
+from datasets import TrainDataset, TestDataset
 from utils import UncertaintyLoss
 
 torch.set_printoptions(precision=8)
@@ -34,18 +34,20 @@ parser.add_argument('--epochs', default=120, type=int,
 parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='FREQ', help='print frequency (default: 10)')
 
-parser.add_argument('--save-dir', default='save2', type=str,
+parser.add_argument('--save-dir', default='save-cont', type=str,
                     metavar='PATH', help='model saved path')
 parser.add_argument('--dataset-path', default='../../../mnt/nfs/wyx/datasets', type=str,
                     metavar='PATH', help='dataset path')
 parser.add_argument('-b', '--batch-size', default=128, type=int,
                     metavar='BS',
-                    help='mini-batch size (default: 64), this is the total '
+                    help='mini-batch size (default: 128), this is the total '
                          'batch size of all GPUs on all nodes when '
                          'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--num_classes1', default=679, type=int,
+parser.add_argument('--num-nodes', default=100, type=int,
+                    metavar='N', help='the number of paths of a circular area')
+parser.add_argument('--num-classes1', default=679, type=int,
                     metavar='N', help='the number of position labels')
-parser.add_argument('--num_classes2', default=2, type=int,
+parser.add_argument('--num-classes2', default=2, type=int,
                     metavar='N', help='the number of angle labels (latitude and longitude)')
 parser.add_argument('--len', default=6, type=int,
                     metavar='LEN', help='the number of model input sequence length (containing the end point frame)')
@@ -53,6 +55,12 @@ parser.add_argument('--lr', default=1e-4, type=float,
                     metavar='LR', help='initial (base) learning rate', dest='lr')
 parser.add_argument('--wd', default=1e-4, type=float,
                     metavar='WD', help='weight decay rate')
+parser.add_argument('--moco-m', default=0.999, type=float,
+                    metavar='M', help='moco-m')
+parser.add_argument('--moco-tau', default=0.07, type=float,
+                    metavar='TAU', help='moco-tau')
+parser.add_argument('--qk-w', default=0.2, type=float,
+                    metavar='QKW', help='qk-w')
 parser.add_argument('--T-0', default=5, type=int,
                     metavar='T0', help='T_0')
 parser.add_argument('--T-mult', default=2, type=int,
@@ -169,16 +177,20 @@ def main_worker(gpu, ngpus_per_node, args):
         dim=512,
         heads=8,
         mlp_dim=2048,
-        depth=6
+        depth=6,
+        moco_m=args.moco_m,
+        moco_tau=args.moco_tau,
+        moco_criterion=nn.CrossEntropyLoss()
     )
 
     # shufflenetv2+vit: flops: 991.25 M, params: 15.41 M
     # ours(mobilenetv3+vit): flops: 444.95 M, params: 14.86 M
-    flops, params = profile(model,
-                            (torch.randn((1, args.len, 3, 224, 224)),
-                             torch.randn((1, args.len, 2))))
-    print('flops: ', flops, 'params: ', params)
-    print('flops: %.2f M, params: %.2f M' % (flops / 1000000.0, params / 1000000.0))
+    # flops, params = profile(model,
+    #                         (torch.randn((1, args.len, 3, 224, 224)),
+    #                          torch.randn((1, args.len, 3, 224, 224)),
+    #                          torch.randn((1, args.len, 2))))
+    # print('flops: ', flops, 'params: ', params)
+    # print('flops: %.2f M, params: %.2f M' % (flops / 1000000.0, params / 1000000.0))
 
     # load from pre-trained, before DistributedDataParallel constructor
     if args.pretrained:
@@ -275,7 +287,7 @@ def main_worker(gpu, ngpus_per_node, args):
         transforms.ToTensor(),
         normalize,
     ])
-    # data augment strategy
+    # # data augment strategy
     # train_transform_aug = transforms.Compose([
     #     transforms.RandomResizedCrop((224, 224)),
     #     AutoAugment(),
@@ -289,15 +301,21 @@ def main_worker(gpu, ngpus_per_node, args):
         normalize,
     ])
     # load dataset
-    train_dataset = OrderTrainDataset(dataset_path=args.dataset_path,
-                                      transform=train_transform,
-                                      input_len=args.len - 1)
-                    # OrderTrainDataset(dataset_path=args.dataset_path,
-                    #                   transform=train_transform_aug,
-                    #                   input_len=args.len - 1)
-    test_dataset = OrderTestDataset(dataset_path=args.dataset_path,
-                                    transform=val_transform,
-                                    input_len=args.len - 1)
+    train_dataset = TrainDataset(dataset_path=args.dataset_path,
+                                 num_nodes=args.num_nodes,
+                                 transform=train_transform,
+                                 input_len=args.len - 1,
+                                 add_cont_style=True)
+    test_dataset = TestDataset(dataset_path=args.dataset_path,
+                               num_nodes=args.num_nodes,
+                               transform=val_transform,
+                               input_len=args.len - 1,
+                               cont_style=False) + \
+                   TestDataset(dataset_path=args.dataset_path,
+                               num_nodes=args.num_nodes,
+                               transform=val_transform,
+                               input_len=args.len - 1,
+                               cont_style=True)
 
     if args.distributed:
         train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
@@ -317,7 +335,8 @@ def main_worker(gpu, ngpus_per_node, args):
             train_sampler.set_epoch(epoch)
 
         # train for one epoch
-        loss, loss1, loss2, loss3 = train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_scheduler, epoch,
+        loss, loss1, loss2, loss3, loss_qk = train(train_loader, model, criterion1, criterion2, criterion, optimizer,
+                                          lr_scheduler, epoch,
                                           args)
 
         # evaluate on validation set
@@ -339,7 +358,8 @@ def main_worker(gpu, ngpus_per_node, args):
             if os.path.exists(args.save_dir) is False:
                 os.mkdir(args.save_dir)
             with open(args.save_dir + "/loss.txt", "a") as file1:
-                file1.write(str(loss) + " " + str(loss1) + " " + str(loss2) + " " + str(loss3) + "\n")
+                file1.write(str(loss) + " " + str(loss1) + " " + str(loss2) +
+                            " " + str(loss3) + " " + str(loss_qk) + "\n")
             file1.close()
             with open(args.save_dir + "/label_acc.txt", "a") as file1:
                 file1.write(str(label_acc) + " " + str(best_acc1) + "\n")
@@ -400,14 +420,16 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
     total_loss1 = 0
     total_loss2 = 0
     total_loss3 = 0
+    total_loss_qk = 0
 
     model.train()
 
     end = time.time()
-    for i, (images, next_angles, label1, label2, label3) in enumerate(train_loader):
+    for i, (images, cont_images, next_angles, label1, label2, label3) in enumerate(train_loader):
         if args.gpu is not None:
             # b,len,3,224,224
             images = images.cuda(args.gpu, non_blocking=True).to(dtype=torch.float32)
+            cont_images = cont_images.cuda(args.gpu, non_blocking=True).to(dtype=torch.float32)
             # b,len,2
             next_angles = next_angles.cuda(args.gpu, non_blocking=True).to(dtype=torch.float32)
             # b
@@ -418,27 +440,42 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
             label3 = label3.cuda(args.gpu, non_blocking=True).to(dtype=torch.float32)
 
         # b,len,3,224,224+b,len,2
-        output1, output2, output3 = model(images, next_angles)
+        output1, output2, output3, cont_output1, cont_output2, cont_output3, qk_loss\
+            = model(img=images, cont_img=cont_images, ang=next_angles)
+
+        # normal loss
         loss1 = criterion1(output1, label1)
         loss2 = criterion1(output2, label2)
         loss3 = criterion2(output3, label3)
-
         loss = criterion([loss1, loss2, loss3])
+
+        # aug loss
+        cont_loss1 = criterion1(cont_output1, label1)
+        cont_loss2 = criterion1(cont_output2, label2)
+        cont_loss3 = criterion2(cont_output3, label3)
+        cont_loss = criterion([cont_loss1, cont_loss2, cont_loss3])
+
+        loss = (1 - args.qk_w) * (loss + cont_loss) / 2 + args.qk_w * qk_loss
 
         # measure accuracy and record loss
         label_acc, _ = accuracy(output1, label1, topk=(1, 5))
         target_acc, _ = accuracy(output2, label2, topk=(1, 5))
         angle_acc_avg = angle_diff(output3, label3)
 
+        cont_label_acc, _ = accuracy(cont_output1, label1, topk=(1, 5))
+        cont_target_acc, _ = accuracy(cont_output2, label2, topk=(1, 5))
+        cont_angle_acc_avg = angle_diff(cont_output3, label3)
+
         losses.update(loss.item(), images.size(0))
-        label_top.update(label_acc[0], images.size(0))
-        target_top.update(target_acc[0], images.size(0))
-        angle_top.update(angle_acc_avg / images.size(0), images.size(0))
+        label_top.update((label_acc[0] + cont_label_acc[0]) / 2, images.size(0))
+        target_top.update((target_acc[0] + cont_target_acc[0]) / 2, images.size(0))
+        angle_top.update((angle_acc_avg + cont_angle_acc_avg) / 2 / images.size(0), images.size(0))
 
         total_loss += loss.item()
-        total_loss1 += loss1.item()
-        total_loss2 += loss2.item()
-        total_loss3 += loss3.item()
+        total_loss1 += (loss1.item() + cont_loss1.item()) / 2
+        total_loss2 += (loss2.item() + cont_loss2.item()) / 2
+        total_loss3 += (loss3.item() + cont_loss3.item()) / 2
+        total_loss_qk += qk_loss.item()
 
         # compute gradient
         optimizer.zero_grad()
@@ -453,7 +490,8 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
         if i % args.print_freq == 0:
             progress.display(i)
     return float(total_loss / (i + 1)), float(total_loss1 / (i + 1)), \
-           float(total_loss2 / (i + 1)), float(total_loss3 / (i + 1))
+           float(total_loss2 / (i + 1)), float(total_loss3 / (i + 1)), \
+           float(total_loss_qk / (i + 1))
 
 
 def validate(val_loader, model, args):
@@ -487,7 +525,7 @@ def validate(val_loader, model, args):
                 label3 = label3.cuda(args.gpu, non_blocking=True).to(dtype=torch.float32)
 
             # b,len,3,224,224+b,len,2
-            output1, output2, output3 = model(images, next_angles)
+            output1, output2, output3 = model(img=images, ang=next_angles)
 
             # measure accuracy
             _, preds = output1.max(1)
