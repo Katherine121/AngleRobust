@@ -16,7 +16,7 @@ import torchvision.transforms as transforms
 import torchvision.models as torchvision_models
 from thop import profile
 from torch import nn
-from torchvision.models import ShuffleNet_V2_X1_0_Weights, MobileNet_V3_Small_Weights, MobileNet_V3_Large_Weights
+from torchvision.models import MobileNet_V3_Small_Weights
 from torchvision.transforms import AutoAugment
 import torch.multiprocessing as mp
 from model import ARTransformer
@@ -36,7 +36,7 @@ parser.add_argument('-p', '--print-freq', default=10, type=int,
 
 parser.add_argument('--save-dir', default='save-baseline', type=str,
                     metavar='PATH', help='model saved path')
-parser.add_argument('--dataset-path', default='../../../mnt/nfs/wyx/datasets', type=str,
+parser.add_argument('--dataset-path', default='../../../nfs4/wyx/datasets', type=str,
                     metavar='PATH', help='dataset path')
 parser.add_argument('-b', '--batch-size', default=128, type=int,
                     metavar='BS',
