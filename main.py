@@ -16,7 +16,7 @@ import torchvision.transforms as transforms
 import torchvision.models as torchvision_models
 from thop import profile
 from torch import nn
-from torchvision.models import ShuffleNet_V2_X1_0_Weights, MobileNet_V3_Small_Weights, MobileNet_V3_Large_Weights
+from torchvision.models import MobileNet_V3_Small_Weights
 from torchvision.transforms import AutoAugment
 import torch.multiprocessing as mp
 from model import ARTransformer
@@ -36,7 +36,7 @@ parser.add_argument('-p', '--print-freq', default=10, type=int,
 
 parser.add_argument('--save-dir', default='save-twobran', type=str,
                     metavar='PATH', help='model saved path')
-parser.add_argument('--dataset-path', default='../../../mnt/nfs/wyx/datasets', type=str,
+parser.add_argument('--dataset-path', default='../../../nfs4/wyx/datasets', type=str,
                     metavar='PATH', help='dataset path')
 parser.add_argument('-b', '--batch-size', default=64, type=int,
                     metavar='BS',
@@ -437,7 +437,7 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
 
         # b,len,3,224,224+b,len,2
         output1, output2, output3, cont_output1, cont_output2, cont_output3\
-            = model(img=images, cont_img=cont_images, ang=next_angles)
+            = model(img=images, ang=next_angles, cont_img=cont_images)
 
         # normal loss
         loss1 = criterion1(output1, label1)

@@ -249,7 +249,7 @@ class ARTransformer(nn.Module):
         img = img[:, -1, :]
         return self.head_label(img), self.head_target(img), self.head_angle(img)
 
-    def forward(self, img, cont_img, ang):
+    def forward(self, img, ang, cont_img):
         """
         forward pass of ARTransformer.
         :param img: input frame sequence.
