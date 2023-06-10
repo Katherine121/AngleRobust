@@ -441,7 +441,7 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
 
         # b,len,3,224,224+b,len,2
         output1, output2, output3, cont_output1, cont_output2, cont_output3, qk_loss\
-            = model(img=images, cont_img=cont_images, ang=next_angles)
+            = model(img=images, ang=next_angles, cont_img=cont_images)
 
         # normal loss
         loss1 = criterion1(output1, label1)

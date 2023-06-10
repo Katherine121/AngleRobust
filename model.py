@@ -266,7 +266,7 @@ class ARTransformer(nn.Module):
         for param_q, param_k in zip(self.encoder_q.parameters(), self.encoder_k.parameters()):
             param_k.data = param_k.data * self.m + param_q.data * (1. - self.m)
 
-    def forward(self, img, cont_img, ang):
+    def forward(self, img, ang, cont_img=None):
         """
         forward pass of ARTransformer.
         :param img: input frame sequence.
