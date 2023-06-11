@@ -34,7 +34,7 @@ parser.add_argument('--epochs', default=120, type=int,
 parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='FREQ', help='print frequency (default: 10)')
 
-parser.add_argument('--save-dir', default='save-baseline', type=str,
+parser.add_argument('--save-dir', default='save-angpast', type=str,
                     metavar='PATH', help='model saved path')
 parser.add_argument('--dataset-path', default='../../../nfs4/wyx/datasets', type=str,
                     metavar='PATH', help='dataset path')

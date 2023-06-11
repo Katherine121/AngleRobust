@@ -256,6 +256,10 @@ class ARTransformer(nn.Module):
         :param ang: input angle sequence.
         :return: the current position preds, the next position preds, the direction angle preds.
         """
+        for index in range(ang.size(1) - 2, 0, -1):
+            ang[:, index, :] = ang[:, index - 1, :]
+        ang[:, 0, :] = 0
+
         img_q1 = self.encoder_q(img, ang)
         img_label, img_target, img_angle = self.header(img_q1)
         return img_label, img_target, img_angle
