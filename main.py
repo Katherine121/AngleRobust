@@ -21,7 +21,7 @@ from torchvision.transforms import AutoAugment
 import torch.multiprocessing as mp
 from model import ARTransformer
 from datasets import TrainDataset, TestDataset
-from utils import UncertaintyLoss
+from utils import UncertaintyLoss, NT_Xent
 
 torch.set_printoptions(precision=8)
 
@@ -36,11 +36,11 @@ parser.add_argument('-p', '--print-freq', default=10, type=int,
 
 parser.add_argument('--save-dir', default='save-cont', type=str,
                     metavar='PATH', help='model saved path')
-parser.add_argument('--dataset-path', default='../../../nfs4/wyx/datasets', type=str,
+parser.add_argument('--dataset-path', default='../../../mnt/nfs/wyx/datasets', type=str,
                     metavar='PATH', help='dataset path')
-parser.add_argument('-b', '--batch-size', default=128, type=int,
+parser.add_argument('-b', '--batch-size', default=64, type=int,
                     metavar='BS',
-                    help='mini-batch size (default: 128), this is the total '
+                    help='mini-batch size (default: 64), this is the total '
                          'batch size of all GPUs on all nodes when '
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('--num-nodes', default=100, type=int,
@@ -61,6 +61,8 @@ parser.add_argument('--moco-tau', default=0.07, type=float,
                     metavar='TAU', help='moco-tau')
 parser.add_argument('--qk-w', default=0.2, type=float,
                     metavar='QKW', help='qk-w')
+parser.add_argument('--temperature', default=0.5, type=float,
+                    metavar='TEMP', help='temperature')
 parser.add_argument('--T-0', default=5, type=int,
                     metavar='T0', help='T_0')
 parser.add_argument('--T-mult', default=2, type=int,
@@ -235,6 +237,7 @@ def main_worker(gpu, ngpus_per_node, args):
     # define loss function
     criterion1 = nn.CrossEntropyLoss().cuda(args.gpu)
     criterion2 = nn.MSELoss().cuda(args.gpu)
+    criterion3 = NT_Xent(args.batch_size, args.temperature, args.world_size)
     criterion = UncertaintyLoss()
 
     # optimize model parameters and loss parameters
@@ -335,9 +338,9 @@ def main_worker(gpu, ngpus_per_node, args):
             train_sampler.set_epoch(epoch)
 
         # train for one epoch
-        loss, loss1, loss2, loss3, loss_qk = train(train_loader, model, criterion1, criterion2, criterion, optimizer,
-                                          lr_scheduler, epoch,
-                                          args)
+        loss, loss1, loss2, loss3, loss_q = train(train_loader, model,
+                                                   criterion1, criterion2, criterion3, criterion,
+                                                   optimizer, lr_scheduler, epoch, args)
 
         # evaluate on validation set
         label_acc, target_acc, angle_acc_avg = validate(val_loader, model, args)
@@ -359,7 +362,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 os.mkdir(args.save_dir)
             with open(args.save_dir + "/loss.txt", "a") as file1:
                 file1.write(str(loss) + " " + str(loss1) + " " + str(loss2) +
-                            " " + str(loss3) + " " + str(loss_qk) + "\n")
+                            " " + str(loss3) + " " + str(loss_q) + "\n")
             file1.close()
             with open(args.save_dir + "/label_acc.txt", "a") as file1:
                 file1.write(str(label_acc) + " " + str(best_acc1) + "\n")
@@ -392,7 +395,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 args=args)
 
 
-def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_scheduler, epoch, args):
+def train(train_loader, model, criterion1, criterion2, criterion3, criterion, optimizer, lr_scheduler, epoch, args):
     """
     training process for one epoch.
     :param train_loader: train dataloader.
@@ -420,7 +423,7 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
     total_loss1 = 0
     total_loss2 = 0
     total_loss3 = 0
-    total_loss_qk = 0
+    total_loss_q = 0
 
     model.train()
 
@@ -440,7 +443,7 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
             label3 = label3.cuda(args.gpu, non_blocking=True).to(dtype=torch.float32)
 
         # b,len,3,224,224+b,len,2
-        output1, output2, output3, cont_output1, cont_output2, cont_output3, qk_loss\
+        output1, output2, output3, cont_output1, cont_output2, cont_output3, q1, q2\
             = model(img=images, ang=next_angles, cont_img=cont_images)
 
         # normal loss
@@ -455,7 +458,9 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
         cont_loss3 = criterion2(cont_output3, label3)
         cont_loss = criterion([cont_loss1, cont_loss2, cont_loss3])
 
-        loss = (1 - args.qk_w) * (loss + cont_loss) / 2 + args.qk_w * qk_loss
+        q_loss = criterion3(q1, q2)
+
+        loss = (1 - args.qk_w) * (loss + cont_loss) / 2 + args.qk_w * q_loss
 
         # measure accuracy and record loss
         label_acc, _ = accuracy(output1, label1, topk=(1, 5))
@@ -475,7 +480,7 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
         total_loss1 += (loss1.item() + cont_loss1.item()) / 2
         total_loss2 += (loss2.item() + cont_loss2.item()) / 2
         total_loss3 += (loss3.item() + cont_loss3.item()) / 2
-        total_loss_qk += qk_loss.item()
+        total_loss_q += q_loss.item()
 
         # compute gradient
         optimizer.zero_grad()
@@ -491,7 +496,7 @@ def train(train_loader, model, criterion1, criterion2, criterion, optimizer, lr_
             progress.display(i)
     return float(total_loss / (i + 1)), float(total_loss1 / (i + 1)), \
            float(total_loss2 / (i + 1)), float(total_loss3 / (i + 1)), \
-           float(total_loss_qk / (i + 1))
+           float(total_loss_q / (i + 1))
 
 
 def validate(val_loader, model, args):
